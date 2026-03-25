@@ -1,7 +1,6 @@
 import csv
 import io
 
-# Output CSV column order — matches WooCommerce variation import format
 OUTPUT_FIELDS = [
     "ID",
     "Type",
@@ -17,39 +16,49 @@ OUTPUT_FIELDS = [
 ]
 
 
-def process_csv(input_file):
-    """
-    Transform the input product CSV into WooCommerce variation rows.
+def get_price_from_sku(sku):
+    sku_upper = sku.upper()
+    if "-18K-" in sku_upper or sku_upper.endswith("-18K"):
+        return 150
+    elif "-14K-" in sku_upper or sku_upper.endswith("-14K"):
+        return 100
+    elif "-P-" in sku_upper or sku_upper.endswith("-P"):
+        return 200
+    return 0
 
-    Logic:
-      - Each input row has one metal (data__metal_name) and multiple shapes
-        (data__diamond_can_be_matched_with, comma-separated in one cell).
-      - For every input row, one output row is created per shape.
-      - Output SKU  = <Product sku>-<Shape>    e.g. SL0001-14K-R-Round
-      - Output Name = <data__product_name> with <Shape>
-      - Description = data__product_description
-      - Stock / Price carried over from the input row.
-    """
+
+def process_csv(input_file):
+
     content = input_file.read()
     if isinstance(content, bytes):
-        content = content.decode("utf-8-sig")  # strip BOM if present
+        content = content.decode("utf-8-sig")
 
-    reader = csv.DictReader(io.StringIO(content))
-    input_rows = list(reader)
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
 
-    if not input_rows:
+    # Auto-detect delimiter (tab or comma)
+    first_line = content.split('\n')[0]
+    delimiter = '\t' if '\t' in first_line else ','
+
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+    raw_rows = list(reader)
+
+    if not raw_rows:
         raise ValueError("The uploaded CSV file is empty.")
 
-    # Validate required columns exist
+    # Strip whitespace from all keys and values
+    input_rows = []
+    for row in raw_rows:
+        input_rows.append({k.strip(): (v.strip() if v else "") for k, v in row.items()})
+
+    # Validate required columns
     required = {
         "Product sku",
         "data__product_name",
         "data__product_description",
         "data__diamond_can_be_matched_with",
-        "Price",
-        "data__qty",
     }
-    missing = required - set(reader.fieldnames or [])
+    available = set(input_rows[0].keys())
+    missing = required - available
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
 
@@ -57,15 +66,17 @@ def process_csv(input_file):
     counter = 1
 
     for row in input_rows:
-        product_sku  = row.get("Product sku", "").strip()
-        product_name = row.get("data__product_name", "").strip()
-        description  = row.get("data__product_description", "").strip()
-        price        = row.get("Price", "").strip()
-        stock        = row.get("data__qty", "").strip()
+        product_sku  = row.get("Product sku", "")
+        product_name = row.get("data__product_name", "")
+        description  = row.get("data__product_description", "")
+        stock        = row.get("data__qty", "")          # optional column
+        price        = get_price_from_sku(product_sku)  # derived from SKU
 
-        # Shapes are comma-separated in one cell — split them out
         raw_shapes = row.get("data__diamond_can_be_matched_with", "")
         shapes = [s.strip() for s in raw_shapes.split(",") if s.strip()]
+
+        if not shapes:
+            continue
 
         for shape in shapes:
             output_rows.append({
@@ -83,17 +94,13 @@ def process_csv(input_file):
             })
             counter += 1
 
-    # Write output CSV to string
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=OUTPUT_FIELDS)
     writer.writeheader()
     writer.writerows(output_rows)
 
     return output.getvalue(), len(input_rows), len(output_rows)
-
-
 def get_sample_combinations():
-    """Return all 70 (metal, shape) pairs for dashboard preview."""
     metals = [
         "14KT Rose Gold", "14KT White Gold", "14KT Yellow Gold",
         "18KT Rose Gold", "18KT White Gold", "18KT Yellow Gold", "Platinum",
