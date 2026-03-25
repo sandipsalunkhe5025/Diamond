@@ -17,19 +17,25 @@ OUTPUT_FIELDS = [
 ]
 
 
-def process_csv(input_file):
+def get_price_from_sku(sku):
     """
-    Transform the input product CSV into WooCommerce variation rows.
+    Derive price from Product SKU pattern:
+      *-14K-* → 100
+      *-18K-* → 150
+      *-P-*   → 200
+    """
+    sku_upper = sku.upper()
+    if "-18K-" in sku_upper:
+        return 150
+    elif "-14K-" in sku_upper:
+        return 100
+    elif "-P-" in sku_upper:
+        return 200
+    return 0  # fallback if no pattern matched
 
-    Logic:
-      - Each input row has one metal (data__metal_name) and multiple shapes
-        (data__diamond_can_be_matched_with, comma-separated in one cell).
-      - For every input row, one output row is created per shape.
-      - Output SKU  = <Product sku>-<Shape>    e.g. SL0001-14K-R-Round
-      - Output Name = <data__product_name> with <Shape>
-      - Description = data__product_description
-      - Stock / Price carried over from the input row.
-    """
+
+def process_csv(input_file):
+
     content = input_file.read()
     if isinstance(content, bytes):
         content = content.decode("utf-8-sig")  # strip BOM if present
@@ -46,8 +52,6 @@ def process_csv(input_file):
         "data__product_name",
         "data__product_description",
         "data__diamond_can_be_matched_with",
-        "Price",
-        "data__qty",
     }
     missing = required - set(reader.fieldnames or [])
     if missing:
@@ -60,13 +64,20 @@ def process_csv(input_file):
         product_sku  = row.get("Product sku", "").strip()
         product_name = row.get("data__product_name", "").strip()
         description  = row.get("data__product_description", "").strip()
-        price        = row.get("Price", "").strip()
-        stock        = row.get("data__qty", "").strip()
+        stock        = row.get("data__qty", "").strip()  # optional column
 
-        # Shapes are comma-separated in one cell — split them out
+        # Derive price from SKU pattern
+        price = get_price_from_sku(product_sku)
+
+        # Shapes extraction
         raw_shapes = row.get("data__diamond_can_be_matched_with", "")
         shapes = [s.strip() for s in raw_shapes.split(",") if s.strip()]
 
+        if not shapes:
+            # skip if no shape found
+            continue
+
+        # Create output rows per shape
         for shape in shapes:
             output_rows.append({
                 "ID":                    counter,
@@ -83,7 +94,7 @@ def process_csv(input_file):
             })
             counter += 1
 
-    # Write output CSV to string
+    # Write output CSV
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=OUTPUT_FIELDS)
     writer.writeheader()
